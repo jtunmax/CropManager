@@ -1,0 +1,132 @@
+
+name: Deploy Tree Tracker to Bluehost
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bluehost-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and Deploy to Bluehost
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Download repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step 2: Configure Node.js
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # Step 3: Install dependencies
+      - name: Install dependencies
+        run: npm ci
+
+      # Step 4: Build production website
+      - name: Build production website
+        env:
+          NODE_OPTIONS: "--max-old-space-size=4096"
+        run: npm run build
+
+      # Step 5: Verify production files
+      - name: Confirm build output
+        run: |
+          test -f dist/index.html
+          echo "Production build completed successfully."
+
+      # Step 6: Configure SSH and validate private key
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.BLUEHOST_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.BLUEHOST_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null
+          echo "SSH private key format verified."
+
+          printf '%s\n' "$KNOWN_HOSTS" | tr -d '\r' > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      # Step 7: Test Bluehost SSH connection
+      - name: Test Bluehost SSH connection
+        env:
+          SSH_HOST: ${{ secrets.BLUEHOST_HOST }}
+          SSH_USER: ${{ secrets.BLUEHOST_USER }}
+        run: |
+          ssh \
+            -i ~/.ssh/id_ed25519 \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "$SSH_USER@$SSH_HOST" \
+            "echo 'SSH connection successful'"
+
+      # Step 8: Verify Bluehost deployment directory
+      - name: Verify Bluehost deployment directory
+        env:
+          SSH_HOST: ${{ secrets.BLUEHOST_HOST }}
+          SSH_USER: ${{ secrets.BLUEHOST_USER }}
+          SSH_PATH: ${{ secrets.BLUEHOST_PATH }}
+        run: |
+          test "$SSH_PATH" = "/home2/giscombz/public_html/website_0a0dde98/" || {
+            echo "ERROR: Unexpected Bluehost deployment path."
+            exit 1
+          }
+
+          ssh \
+            -i ~/.ssh/id_ed25519 \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "$SSH_USER@$SSH_HOST" \
+            "test -d '$SSH_PATH' && test -w '$SSH_PATH'"
+
+          echo "Bluehost deployment directory verified."
+
+      # Step 9: Deploy production files to Bluehost
+      - name: Deploy website to Bluehost
+        env:
+          SSH_HOST: ${{ secrets.BLUEHOST_HOST }}
+          SSH_USER: ${{ secrets.BLUEHOST_USER }}
+          SSH_PATH: ${{ secrets.BLUEHOST_PATH }}
+        run: |
+          rsync -avz \
+            --exclude='.htaccess' \
+            --exclude='.well-known/' \
+            --exclude='cgi-bin/' \
+            -e "ssh -i ~/.ssh/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes" \
+            dist/ "$SSH_USER@$SSH_HOST:$SSH_PATH"
+
+          echo "Website files uploaded successfully."
+
+      # Step 10: Verify deployed index.html
+      - name: Verify deployed website files
+        env:
+          SSH_HOST: ${{ secrets.BLUEHOST_HOST }}
+          SSH_USER: ${{ secrets.BLUEHOST_USER }}
+          SSH_PATH: ${{ secrets.BLUEHOST_PATH }}
+        run: |
+          ssh \
+            -i ~/.ssh/id_ed25519 \
+            -o IdentitiesOnly=yes \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            "$SSH_USER@$SSH_HOST" \
+            "test -s '$SSH_PATH/index.html'"
+
+          echo "Deployment verification completed."
